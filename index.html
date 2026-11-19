@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>Dot Clock</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --background: #fff;
+      --foreground: #111;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    body {
+      background: var(--background);
+      transition: background-color 700ms ease;
+    }
+
+    body.dark {
+      color-scheme: dark;
+      --background: #080808;
+      --foreground: #f5f5f5;
+    }
+
+    main {
+      position: fixed;
+      inset: 0;
+      background: var(--background);
+      transition: background-color 700ms ease;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      opacity: 1;
+      transition: opacity 240ms ease;
+    }
+
+    canvas.changing {
+      opacity: 0.18;
+    }
+
+    .mode-switch {
+      position: fixed;
+      z-index: 1;
+      top: max(22px, env(safe-area-inset-top));
+      right: max(22px, env(safe-area-inset-right));
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      border: 1px solid var(--foreground);
+      border-radius: 50%;
+      background: var(--foreground);
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      transition: transform 220ms ease, background-color 700ms ease, border-color 700ms ease;
+    }
+
+    .mode-switch:hover {
+      transform: scale(1.12);
+    }
+
+    .mode-switch:focus-visible {
+      outline: 1px solid var(--foreground);
+      outline-offset: 5px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <canvas id="clock" aria-hidden="true"></canvas>
+    <button class="mode-switch" id="mode-switch" type="button" aria-label="아날로그 시계로 전환" title="시계 모드 전환"></button>
+  </main>
+  <script>
+    (() => {
+      const canvas = document.querySelector('#clock');
+      const context = canvas.getContext('2d');
+      const switchButton = document.querySelector('#mode-switch');
+      const themeColor = document.querySelector('meta[name="theme-color"]');
+      const segmentPaths = {
+        a: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]],
+        b: [[4, 0], [4, 1], [4, 2], [4, 3]],
+        c: [[4, 3], [4, 4], [4, 5], [4, 6]],
+        d: [[0, 6], [1, 6], [2, 6], [3, 6], [4, 6]],
+        e: [[0, 3], [0, 4], [0, 5], [0, 6]],
+        f: [[0, 0], [0, 1], [0, 2], [0, 3]],
+        g: [[0, 3], [1, 3], [2, 3], [3, 3], [4, 3]]
+      };
+      const digitSegments = [
+        ['a', 'b', 'c', 'd', 'e', 'f'],
+        ['b', 'c'],
+        ['a', 'b', 'd', 'e', 'g'],
+        ['a', 'b', 'c', 'd', 'g'],
+        ['b', 'c', 'f', 'g'],
+        ['a', 'c', 'd', 'f', 'g'],
+        ['a', 'c', 'd', 'e', 'f', 'g'],
+        ['a', 'b', 'c'],
+        ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+        ['a', 'b', 'c', 'd', 'f', 'g']
+      ];
+
+      let width = 0;
+      let height = 0;
+      let pixelRatio = 1;
+      let step = 16;
+      let points = [];
+      let grid = document.createElement('canvas');
+      let gridContext = grid.getContext('2d');
+      let mode = 'digital';
+      let previousTime = '';
+      let displayedTime = '';
+      let transitionStarted = 0;
+      let lastFrame = 0;
+
+      function getTime() {
+        const now = new Date();
+        return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      }
+
+      function resize() {
+        const bounds = canvas.getBoundingClientRect();
+        width = bounds.width;
+        height = bounds.height;
+        pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+        step = Math.max(10, Math.min(width / 26, height / 16, 30));
+
+        canvas.width = Math.round(width * pixelRatio);
+        canvas.height = Math.round(height * pixelRatio);
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+
+        grid.width = canvas.width;
+        grid.height = canvas.height;
+        gridContext = grid.getContext('2d');
+        gridContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        points = [];
+
+        const columns = Math.ceil(width / (2 * step)) + 1;
+        const rows = Math.ceil(height / (2 * step)) + 1;
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const dotRadius = Math.max(0.8, step * 0.052);
+        gridContext.fillStyle = getInk();
+        gridContext.beginPath();
+
+        for (let column = -columns; column <= columns; column++) {
+          const x = centerX + column * step;
+          if (x < -step || x > width + step) continue;
+          for (let row = -rows; row <= rows; row++) {
+            const y = centerY + row * step;
+            if (y < -step || y > height + step) continue;
+            points.push({ x, y });
+            gridContext.moveTo(x + dotRadius, y);
+            gridContext.arc(x, y, dotRadius, 0, Math.PI * 2);
+          }
+        }
+        gridContext.fill();
+      }
+
+      function getInk() {
+        return mode === 'digital' ? '#111111' : '#f5f5f5';
+      }
+
+      function getDigitOrigins() {
+        const centerX = width / 2;
+        const centerY = height / 2;
+        return [
+          { x: centerX - 13 * step, y: centerY - 3 * step },
+          { x: centerX - 7 * step, y: centerY - 3 * step },
+          { x: centerX + 3 * step, y: centerY - 3 * step },
+          { x: centerX + 9 * step, y: centerY - 3 * step }
+        ];
+      }
+
+      function drawSegment(origin, segment, alpha) {
+        if (alpha <= 0) return;
+        const path = segmentPaths[segment];
+        context.globalAlpha = alpha;
+        context.beginPath();
+        context.moveTo(origin.x + path[0][0] * step, origin.y + path[0][1] * step);
+        for (let i = 1; i < path.length; i++) {
+          context.lineTo(origin.x + path[i][0] * step, origin.y + path[i][1] * step);
+        }
+        context.stroke();
+      }
+
+      function drawDigital(now) {
+        const time = getTime();
+        if (!displayedTime) displayedTime = time;
+        if (time !== displayedTime) {
+          previousTime = displayedTime;
+          displayedTime = time;
+          transitionStarted = now;
+        }
+
+        context.drawImage(grid, 0, 0, width, height);
+        context.strokeStyle = getInk();
+        context.lineWidth = Math.max(1, step * 0.075);
+        context.lineCap = 'round';
+        context.lineJoin = 'round';
+        const progress = previousTime
+          ? Math.min(1, (now - transitionStarted) / 650)
+          : 1;
+        const oldDigits = previousTime.replace(':', '');
+        const newDigits = displayedTime.replace(':', '');
+        const origins = getDigitOrigins();
+
+        for (let index = 0; index < 4; index++) {
+          const oldSegments = digitSegments[Number(oldDigits[index])];
+          const newSegments = digitSegments[Number(newDigits[index])];
+          for (const segment of new Set([...oldSegments, ...newSegments])) {
+            const wasOn = oldSegments.includes(segment);
+            const isOn = newSegments.includes(segment);
+            const alpha = wasOn && isOn ? 1 : isOn ? progress : 1 - progress;
+            drawSegment(origins[index], segment, alpha);
+          }
+        }
+
+        const colonX = width / 2;
+        const centerY = height / 2;
+        const colonRadius = Math.max(1.3, step * 0.12);
+        context.globalAlpha = 1;
+        context.fillStyle = getInk();
+        for (const offset of [-step, step]) {
+          context.beginPath();
+          context.arc(colonX, centerY + offset, colonRadius, 0, Math.PI * 2);
+          context.fill();
+        }
+        context.globalAlpha = 1;
+        if (progress === 1) previousTime = '';
+      }
+
+      function pointToSegmentDistance(x, y, x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const lengthSquared = dx * dx + dy * dy;
+        const projection = lengthSquared
+          ? Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / lengthSquared))
+          : 0;
+        return Math.hypot(x - (x1 + projection * dx), y - (y1 + projection * dy));
+      }
+
+      function drawAnalog(now) {
+        context.drawImage(grid, 0, 0, width, height);
+        const nowDate = new Date();
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const radius = Math.min(width, height) * 0.32;
+        const secondAngle = (nowDate.getSeconds() + nowDate.getMilliseconds() / 1000) * Math.PI / 30 - Math.PI / 2;
+        const minuteAngle = (nowDate.getMinutes() + nowDate.getSeconds() / 60) * Math.PI / 30 - Math.PI / 2;
+        const hourAngle = ((nowDate.getHours() % 12) + nowDate.getMinutes() / 60) * Math.PI / 6 - Math.PI / 2;
+        const hands = [
+          { angle: hourAngle, length: radius * 0.43, weight: 1 },
+          { angle: minuteAngle, length: radius * 0.68, weight: 0.9 },
+          { angle: secondAngle, length: radius * 0.84, weight: 0.65 }
+        ];
+        const ringWidth = step * 0.72;
+        const handWidth = step * 0.76;
+        const dotRadius = Math.max(1, step * 0.052);
+        const baseRadius = Math.max(0.8, step * 0.052);
+        const ink = getInk();
+        context.fillStyle = ink;
+        context.beginPath();
+
+        for (const point of points) {
+          const dx = point.x - centerX;
+          const dy = point.y - centerY;
+          const distance = Math.hypot(dx, dy);
+          const ringDistance = Math.abs(distance - radius);
+          let emphasis = Math.exp(-1.7 * (ringDistance / ringWidth) ** 2) * 0.95;
+
+          for (const hand of hands) {
+            const endX = centerX + Math.cos(hand.angle) * hand.length;
+            const endY = centerY + Math.sin(hand.angle) * hand.length;
+            const handDistance = pointToSegmentDistance(point.x, point.y, centerX, centerY, endX, endY);
+            const handEmphasis = Math.exp(-1.7 * (handDistance / handWidth) ** 2) * hand.weight;
+            emphasis = Math.max(emphasis, handEmphasis);
+          }
+
+          const cardinal = Math.abs(distance - radius * 0.94) < step * 0.55
+            && (Math.abs(dx) < step * 0.55 || Math.abs(dy) < step * 0.55);
+          if (cardinal) emphasis = Math.max(emphasis, 1);
+          if (distance < step * 0.6) emphasis = 1;
+
+          const size = baseRadius + emphasis * (dotRadius * 1.45);
+          context.moveTo(point.x + size, point.y);
+          context.arc(point.x, point.y, size, 0, Math.PI * 2);
+        }
+        context.fill();
+      }
+
+      function frame(now) {
+        window.requestAnimationFrame(frame);
+        if (now - lastFrame < 32) return;
+        lastFrame = now;
+        context.clearRect(0, 0, width, height);
+        if (mode === 'digital') drawDigital(now);
+        else drawAnalog(now);
+      }
+
+      function switchMode() {
+        canvas.classList.add('changing');
+        window.setTimeout(() => {
+          mode = mode === 'digital' ? 'analog' : 'digital';
+          document.body.classList.toggle('dark', mode === 'analog');
+          themeColor.content = mode === 'analog' ? '#080808' : '#ffffff';
+          switchButton.setAttribute(
+            'aria-label',
+            mode === 'analog' ? '디지털 시계로 전환' : '아날로그 시계로 전환'
+          );
+          resize();
+          canvas.classList.remove('changing');
+        }, 160);
+      }
+
+      switchButton.addEventListener('click', switchMode);
+      window.addEventListener('resize', resize);
+      resize();
+      window.requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>
